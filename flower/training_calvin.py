@@ -89,17 +89,19 @@ def train(cfg: DictConfig) -> None:
         work_dir.mkdir(exist_ok=True)
         os.chdir(work_dir)
         
+        num_devices = cfg.trainer.devices if isinstance(cfg.trainer.devices, int) else len(cfg.trainer.devices)
+        strategy = "ddp_find_unused_parameters_true" if num_devices > 1 else "auto"
         trainer_args = {
             **cfg.trainer,
             "logger": train_logger,
             "callbacks": callbacks,
             "benchmark": False,
-            "strategy": "ddp_find_unused_parameters_true",
+            "strategy": strategy,
             "accelerator": "gpu",
             "devices": cfg.trainer.devices,
-            "use_distributed_sampler": True,
+            "use_distributed_sampler": num_devices > 1,
             "default_root_dir": work_dir,
-            "sync_batchnorm": True,
+            "sync_batchnorm": num_devices > 1,
         }
         
         # Log configuration

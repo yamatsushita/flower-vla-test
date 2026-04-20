@@ -34,9 +34,10 @@ class HulcWrapper(gym.Wrapper):
         cuda_id = device.index if device.type == "cuda" else 0
         try:
             egl_id = get_egl_device_id(cuda_id)
-        except EglDeviceNotFoundError:
+        except (EglDeviceNotFoundError, FileNotFoundError, OSError):
             logger.warning(
-                "Couldn't find correct EGL device. Setting EGL_VISIBLE_DEVICE=0. "
+                "Couldn't find correct EGL device (possibly running on Windows). "
+                "Setting EGL_VISIBLE_DEVICE=0. "
                 "When using DDP with many GPUs this can lead to OOM errors. "
                 "Did you install PyBullet correctly? Please refer to calvin env README"
             )

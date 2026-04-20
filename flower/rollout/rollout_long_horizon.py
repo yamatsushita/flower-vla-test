@@ -140,6 +140,9 @@ class RolloutLongHorizon(Callback):
 
     def on_validation_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         """Called when the validation loop begins."""
+        # Skip environment initialization if we haven't reached the rollout epoch yet
+        if pl_module.current_epoch < self.skip_epochs and self.env is None:
+            return
         if self.env is None:
             self.device = pl_module.device
 
