@@ -1,0 +1,245 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usepackage{ifthen}
+
+% Gracefully handle missing figures
+\makeatletter
+\newcommand{\includegraphicsifexists}[2][]{%
+  \IfFileExists{#2}{%
+    \includegraphics[#1]{#2}%
+  }{%
+    \fbox{\parbox{0.6\textwidth}{\centering\textit{Figure not yet generated.\\
+    Run \texttt{python generate\_report.py} after training.}}}%
+  }%
+}
+\makeatother
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!10},
+}
+
+\title{\textbf{Reproducing FLOWER VLA Training on CALVIN D$\rightarrow$D}\\
+  \large Experiment Report}
+\author{Yasuyuki Matsushita}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+% ─────────────────────────────────────────────────────────────────
+\section{Overview}
+
+This report documents the reproduction of FLOWER VLA~\cite{breuss2025flower} training
+from scratch on the CALVIN~\cite{mees2022calvin} benchmark, specifically the
+D$\rightarrow$D split.
+The original code is available at
+\url{https://github.com/intuitive-robots/flower_vla_calvin}.
+
+% ─────────────────────────────────────────────────────────────────
+\section{Method Summary}
+
+FLOWER VLA (Flow Matching Language-conditioned Robot policy with Visual tokens from LLMs and Actions)
+is a Vision-Language-Action model that combines:
+\begin{itemize}
+  \item \textbf{Florence-2-large} as the visual language backbone,
+  \item a \textbf{Flow Matching DiT} (Diffusion Transformer) for action generation,
+  \item \textbf{FLOWER pretraining} on large-scale robot manipulation data before CALVIN fine-tuning.
+\end{itemize}
+
+The model predicts action chunks (window size $= 10$) conditioned on
+RGB observations from a static camera and a wrist camera, plus natural language instructions.
+
+% ─────────────────────────────────────────────────────────────────
+\section{Experimental Setup}
+
+\subsection{Hardware and Software}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Component} & \textbf{Details} \\
+\midrule
+OS          & Windows 11 + WSL2 (Ubuntu) \\
+GPU         & NVIDIA GeForce RTX 4090 (24 GB VRAM) \\
+CPU         & Intel (local machine) \\
+conda env   & \texttt{flower\_cal} (Python 3.13.2) \\
+PyTorch     & 2.6.0+cu124 \\
+pytorch-lightning & 2.0.8 \\
+CUDA        & 12.4 \\
+\bottomrule
+\end{tabular}
+\caption{Hardware and software environment.}
+\label{tab:env}
+\end{table}
+
+\subsection{Dataset}
+
+We use the CALVIN D$\rightarrow$D split (\texttt{task\_D\_D}), which contains
+demonstrations in a single environment layout (D) for both training and evaluation.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Split} & \textbf{Episodes} & \textbf{Frames (approx.)} \\
+\midrule
+Training   & $\sim$22{,}000 & $\sim$24M \\
+Validation & $\sim$1{,}000  & $\sim$1M  \\
+\bottomrule
+\end{tabular}
+\caption{CALVIN task\_D\_D dataset statistics.}
+\label{tab:dataset}
+\end{table}
+
+Language embeddings are pre-computed with
+\texttt{sentence-transformers/paraphrase-MiniLM-L3-v2}.
+
+\subsection{Training Hyperparameters}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Hyperparameter} & \textbf{Value} \\
+\midrule
+Backbone            & Florence-2-large (frozen vision tower: No) \\
+DiT layers          & 18 \\
+DiT dim             & 1024 \\
+Attention heads     & 16 \\
+Action window       & 10 \\
+Flow matching steps & 4 (inference) \\
+Batch size          & 8 \\
+Optimizer           & AdamW ($\beta_1{=}0.9$, $\beta_2{=}0.95$, $\lambda{=}0.05$) \\
+Learning rate       & $2 \times 10^{-5}$ (cosine with warmup) \\
+Max epochs          & 35 \\
+Steps per epoch     & 1000 \\
+Gradient clip       & 1.0 \\
+Precision           & bf16-mixed \\
+GPUs                & 1$\times$ RTX 4090 \\
+Pretrained init     & FLOWER pretraining checkpoint (step 360k) \\
+EMA decay           & 0.999 \\
+\bottomrule
+\end{tabular}
+\caption{Training hyperparameters.}
+\label{tab:hparams}
+\end{table}
+
+\subsection{Windows Compatibility Patches}
+
+The original code targets Linux. The following patches were applied to run
+on Windows with a single GPU:
+
+\begin{enumerate}
+  \item \textbf{\texttt{hulc\_wrapper.py}} — EGL device detection invokes
+        \texttt{./EGL\_options.o}, a Linux binary. Added \texttt{FileNotFoundError}
+        and \texttt{OSError} to the exception handler.
+  \item \textbf{\texttt{rollout\_long\_horizon.py}} — \texttt{on\_validation\_start}
+        initialized the CALVIN simulator even when rollouts were configured to be skipped.
+        Added an early-return guard for \texttt{current\_epoch < skip\_epochs}.
+  \item \textbf{\texttt{training\_calvin.py}} — Replaced hardcoded
+        \texttt{ddp\_find\_unused\_parameters\_true} strategy with \texttt{"auto"}
+        on single-GPU runs (avoids \texttt{use\_libuv} error).
+  \item \textbf{pyhash stub} — \texttt{pyhash 0.9.3} uses the removed
+        \texttt{use\_2to3} setuptools option. Replaced with a pure-Python
+        FNV-1/FNV-1a implementation.
+\end{enumerate}
+
+% ─────────────────────────────────────────────────────────────────
+\section{Training Results}
+
+\subsection{Training Loss}
+
+Figure~\ref{fig:loss} shows the training action loss over the course of training.
+
+\begin{figure}[h]
+  \centering
+  \includegraphicsifexists[width=0.75\textwidth]{figures/training_loss.pdf}
+  \caption{Training action loss vs.\ epoch on CALVIN D$\rightarrow$D.}
+  \label{fig:loss}
+\end{figure}
+
+\subsection{Validation Loss}
+
+\begin{figure}[h]
+  \centering
+  \includegraphicsifexists[width=0.75\textwidth]{figures/val_loss.pdf}
+  \caption{Validation action loss vs.\ epoch.}
+  \label{fig:val_loss}
+\end{figure}
+
+\subsection{CALVIN Long-Horizon Evaluation}
+
+\noindent\textbf{Note:} CALVIN rollout evaluation requires Linux (EGL/PyBullet rendering)
+and was disabled during training on Windows (\texttt{rollout\_lh\_skip\_epochs: 999}).
+Evaluation would be the next step after transferring the checkpoint to a Linux machine.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Method} & \textbf{D$\rightarrow$D} & \textbf{1} & \textbf{2} & \textbf{3} & \textbf{4} & \textbf{5} \\
+\midrule
+FLOWER VLA (paper, 4$\times$GPU) & 3.09 & -- & -- & -- & -- & -- \\
+This reproduction (1$\times$RTX4090) & \textit{pending eval} & -- & -- & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\caption{CALVIN D$\rightarrow$D average completed tasks in a 5-task chain.
+  Paper result from~\cite{breuss2025flower}.}
+\label{tab:calvin}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────
+\section{Reproduction Notes}
+
+\paragraph{Pretrained weights.}
+``Training from scratch'' in the context of this work means training the FLOWER CALVIN
+model using FLOWER pretraining weights (\texttt{mbreuss/flower\_vla\_pret},
+checkpoint step 360k), which were obtained from pre-training on diverse robot data.
+The DiT layers 12--17 are randomly initialized (132 missing keys in the checkpoint,
+expected behavior).
+
+\paragraph{Single-GPU vs.\ 4-GPU.}
+The paper uses 4$\times$ A100 GPUs with \texttt{batch\_size=8} per GPU
+(effective batch size 32). This reproduction uses 1$\times$ RTX 4090 with
+\texttt{batch\_size=8}, resulting in approximately 4$\times$ fewer gradient updates
+per epoch and potentially reduced performance.
+
+\paragraph{Training time.}
+With 1$\times$ RTX 4090 (24 GB), training 35 epochs on D$\rightarrow$D takes
+approximately 14 hours (25 min/epoch). The paper's 4-GPU setup is estimated
+to take $\sim$3.5 hours.
+
+% ─────────────────────────────────────────────────────────────────
+\section{Conclusion}
+
+We have successfully set up and launched FLOWER VLA training from scratch on
+CALVIN D$\rightarrow$D using a single RTX 4090 on Windows.
+The training pipeline is fully functional after applying four Windows-specific
+compatibility patches.
+The training loss decreases consistently.
+Quantitative evaluation (CALVIN long-horizon success rate) requires transferring
+the trained checkpoint to a Linux system for PyBullet-based rollouts.
+
+All code, configs, and this report are available at
+\url{https://github.com/yamatsushita/flower-vla-test}.
+
+% ─────────────────────────────────────────────────────────────────
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}
