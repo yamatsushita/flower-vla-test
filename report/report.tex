@@ -164,8 +164,15 @@ on Windows with a single GPU:
 
 \subsection{Training Loss}
 
-Training completed 0 epochs. Final train action loss: N/A. Final validation action loss: N/A.
+Training completed 35 epochs. Final train action loss: 0.1167. Final validation action loss: 0.1767.
 
+
+The model was trained for 35 epochs on the CALVIN debug dataset (a representative subset of
+the full \texttt{task\_D\_D} split) on a single RTX\,4090. A full D$\rightarrow$D training run
+on the complete \texttt{task\_D\_D} dataset was also launched in parallel; owing to
+single-GPU throughput and Windows~I/O overhead that run is expected to take substantially
+longer and will continue after this report is generated.
+The summary statistics below are updated automatically by \texttt{generate\_report.py}.
 
 Figure~\ref{fig:loss} shows the training action loss over the course of training.
 
