@@ -1,0 +1,74 @@
+# RandomProjVLA — random projection encoder replacing Florence-2-large.
+# All VLM-related options (vlm_path, freeze_florence, freeze_vision_tower)
+# are kept for API compatibility but ignored by the model.
+_target_: flower.models.random_proj_vla.RandomProjVLA
+_recursive_: false
+
+# Random projection encoder configuration
+rp_image_size: 112          # input image resolution
+rp_patch_size: 16           # 16×16 patches → 7×7=49 patches per 112×112 image
+rp_proj_dim: 1024           # matches Florence-2-large d_model for fair comparison
+rp_text_max_len: 32
+rp_tokenizer: bert-base-uncased
+
+# VLM fields (ignored by RandomProjVLA, kept for API compat)
+vlm_path: none
+freeze_florence: false
+freeze_vision_tower: false
+vlm_prompt_style: default
+token_dropout: 0.1
+
+# Model Structure (identical to flower_local)
+multistep: ${multistep}
+num_sampling_steps: 4
+lowdim_obs_dim: 7
+action_dim: 7
+act_window_size: 10
+
+# No pretrained weights — train from scratch
+load_pretrained: false
+pretrained_model_path: null
+
+# Model flags (same as flower_local)
+use_second_view: True
+second_view_key: image_wrist
+action_type_adaln: True
+use_causal_attention: true
+use_cross_attn: True
+use_adaln_cond: false
+use_readout_token: false
+use_proprio: false
+return_act_chunk: false
+
+# DiT Configuration (identical to flower_local for fair comparison)
+sampling_type: uniform
+dit_dim: 1024
+n_heads: 16
+n_layers: 18
+attn_pdrop: 0.1
+resid_pdrop: 0.1
+mlp_pdrop: 0.1
+
+# RoPE Configuration
+use_rope: true
+use_nope: false
+query_seq_len: 100
+rope_theta: 32.0
+
+# Optimizer Configuration — higher LR for scratch training
+optimizer_type: adamw
+
+optimizer:
+  _target_: torch.optim.AdamW
+  transformer_weight_decay: 0.05
+  learning_rate: 1e-4
+  betas: [0.9, 0.95]
+
+lr_scheduler:
+  lr_scheduler:
+    init_lr: 1e-4
+    init_lr_scale: 0.1
+    final_lr_scale: 0.1
+    total_steps: 35000
+    phase_ratio: "(0.05, 0.15, 0.80)"
+    lr: 1e-4
