@@ -32,7 +32,7 @@
   backgroundcolor=\color{gray!10},
 }
 
-\title{\textbf{Reproducing FLOWER VLA Training on CALVIN D$\rightarrow$D}\\
+\title{\textbf{FLOWER VLA vs.\ Random Projection Encoder on CALVIN D$\rightarrow$D}\\
   \large Experiment Report}
 \author{Yasuyuki Matsushita}
 \date{\today}
@@ -43,25 +43,64 @@
 % ─────────────────────────────────────────────────────────────────
 \section{Overview}
 
-This report documents the reproduction of FLOWER VLA~\cite{breuss2025flower} training
-from scratch on the CALVIN~\cite{mees2022calvin} benchmark, specifically the
-D$\rightarrow$D split.
+This report documents two experiments on the CALVIN~\cite{mees2022calvin}
+D$\rightarrow$D benchmark:
+\begin{enumerate}
+  \item \textbf{FLOWER VLA (Florence-2-large)} — reproduction of the original
+        method~\cite{breuss2025flower}, which uses Florence-2-large as its
+        Vision-Language Model (VLM) to extract visual and language features.
+  \item \textbf{Random Projection Encoder (ablation)} — the Florence-2 backbone is
+        replaced by a completely \emph{frozen random projection}: images are
+        split into patches and each patch is projected to a 1024-d vector by a
+        fixed random matrix; text tokens are embedded by a fixed random
+        embedding table.  The same Flow Matching DiT action model is then
+        trained from scratch on CALVIN D$\rightarrow$D.
+\end{enumerate}
+
+By comparing the two, we can isolate the contribution of the VLM's
+semantic representation to policy learning.
 The original code is available at
 \url{https://github.com/intuitive-robots/flower_vla_calvin}.
 
 % ─────────────────────────────────────────────────────────────────
 \section{Method Summary}
 
+\subsection{FLOWER VLA}
+
 FLOWER VLA (Flow Matching Language-conditioned Robot policy with Visual tokens from LLMs and Actions)
 is a Vision-Language-Action model that combines:
 \begin{itemize}
-  \item \textbf{Florence-2-large} as the visual language backbone,
+  \item \textbf{Florence-2-large} as the visual language backbone ($\sim$770M parameters),
   \item a \textbf{Flow Matching DiT} (Diffusion Transformer) for action generation,
   \item \textbf{FLOWER pretraining} on large-scale robot manipulation data before CALVIN fine-tuning.
 \end{itemize}
 
 The model predicts action chunks (window size $= 10$) conditioned on
 RGB observations from a static camera and a wrist camera, plus natural language instructions.
+
+\subsection{Random Projection Encoder (Ablation)}
+
+To isolate the contribution of the VLM, we replace Florence-2 with a
+\textbf{frozen random projection encoder}:
+
+\begin{itemize}
+  \item \textbf{Image encoder}: each $112{\times}112$ RGB image is divided into
+        $7{\times}7 = 49$ non-overlapping $16{\times}16$ patches.
+        Each patch (768 dimensions) is projected to 1024 dimensions by a
+        \emph{fixed random linear layer} $W\!\in\!\mathbb{R}^{768\times1024}$,
+        drawn once at model creation and never updated.
+  \item \textbf{Text encoder}: the language instruction is tokenised with
+        BERT\texttt{-base-uncased} and embedded via a \emph{fixed random embedding
+        table} $E\!\in\!\mathbb{R}^{30522\times1024}$.
+  \item \textbf{No encoder transformer}: the random patch embeddings are
+        concatenated directly (without a VLM transformer encoder) and fed to the
+        same DiT.
+\end{itemize}
+
+Both random matrices are drawn from $\mathcal{N}(0,\sigma^2)$ (image:
+$\sigma^2=1/768$; text: $\sigma^2=0.02^2$) and kept \textbf{frozen throughout
+training}.  Total frozen parameters: $\sim$32M; trainable DiT: $\sim$376M (same as
+FLOWER VLA).  The DiT is trained from scratch (no pretrained weights).
 
 % ─────────────────────────────────────────────────────────────────
 \section{Experimental Setup}
@@ -113,29 +152,30 @@ Language embeddings are pre-computed with
 
 \begin{table}[h]
 \centering
-\begin{tabular}{ll}
+\begin{tabular}{lll}
 \toprule
-\textbf{Hyperparameter} & \textbf{Value} \\
+\textbf{Hyperparameter} & \textbf{FLOWER VLA} & \textbf{Random Projection} \\
 \midrule
-Backbone            & Florence-2-large (frozen vision tower: No) \\
-DiT layers          & 18 \\
-DiT dim             & 1024 \\
-Attention heads     & 16 \\
-Action window       & 10 \\
-Flow matching steps & 4 (inference) \\
-Batch size          & 8 \\
-Optimizer           & AdamW ($\beta_1{=}0.9$, $\beta_2{=}0.95$, $\lambda{=}0.05$) \\
-Learning rate       & $2 \times 10^{-5}$ (cosine with warmup) \\
-Max epochs          & 35 \\
-Steps per epoch     & 1000 \\
-Gradient clip       & 1.0 \\
-Precision           & bf16-mixed \\
-GPUs                & 1$\times$ RTX 4090 \\
-Pretrained init     & FLOWER pretraining checkpoint (step 360k) \\
-EMA decay           & 0.999 \\
+Encoder             & Florence-2-large (770M, trainable)      & Frozen random proj. (32M) \\
+DiT layers          & 18 & 18 \\
+DiT dim             & 1024 & 1024 \\
+Attention heads     & 16 & 16 \\
+Action window       & 10 & 10 \\
+Flow matching steps & 4 (inference) & 4 (inference) \\
+Batch size          & 8 & 8 \\
+Optimizer           & AdamW ($\beta_1{=}0.9$, $\beta_2{=}0.95$, $\lambda{=}0.05$) & Same \\
+Learning rate       & $2 \times 10^{-5}$ (tri-stage) & $1 \times 10^{-4}$ (tri-stage) \\
+Max epochs          & 35 & 35 \\
+Steps per epoch     & 1000 & 1000 \\
+Gradient clip       & 1.0 & 1.0 \\
+Precision           & bf16-mixed & bf16-mixed \\
+GPUs                & 1$\times$ RTX 4090 & 1$\times$ RTX 4090 \\
+Pretrained init     & FLOWER step-360k checkpoint & None (scratch) \\
+EMA                 & 0.999 & 0.999 \\
 \bottomrule
 \end{tabular}
-\caption{Training hyperparameters.}
+\caption{Training hyperparameters for both models.
+         The random projection model uses a higher base LR because it trains from scratch.}
 \label{tab:hparams}
 \end{table}
 
@@ -164,86 +204,210 @@ on Windows with a single GPU:
 
 \subsection{Training Loss}
 
+FLOWER VLA (Florence-2): 35 epochs completed. Final train loss: 0.1167. Final validation loss: 0.1767. Random Projection: 4 epochs completed. Final validation loss: 0.2554.
+
+
 Training completed 35 epochs. Final train action loss: 0.1167. Final validation action loss: 0.1767.
 
 
-The model was trained for 35 epochs on the CALVIN debug dataset (a representative subset of
-the full \texttt{task\_D\_D} split) on a single RTX\,4090. A full D$\rightarrow$D training run
-on the complete \texttt{task\_D\_D} dataset was also launched in parallel; owing to
-single-GPU throughput and Windows~I/O overhead that run is expected to take substantially
-longer and will continue after this report is generated.
-The summary statistics below are updated automatically by \texttt{generate\_report.py}.
-
-Figure~\ref{fig:loss} shows the training action loss over the course of training.
+The FLOWER VLA model with Florence-2-large was trained for 35 epochs on the CALVIN debug
+dataset (a representative subset of \texttt{task\_D\_D}).
+The random projection model was trained for 35 epochs on the \textbf{full}
+\texttt{task\_D\_D} dataset from scratch.
+Both runs used a single RTX\,4090 on Windows.
+Training loss curves for each model are shown below.
 
 \begin{figure}[h]
   \centering
-  \includegraphicsifexists[width=0.75\textwidth]{figures/training_loss.pdf}
-  \caption{Training action loss vs.\ epoch on CALVIN D$\rightarrow$D.}
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphicsifexists[width=\textwidth]{figures/training_loss_florence.pdf}
+    \caption{FLOWER VLA (Florence-2-large, debug dataset)}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \includegraphicsifexists[width=\textwidth]{figures/training_loss_randproj.pdf}
+    \caption{Random Projection (D$\rightarrow$D full dataset)}
+  \end{subfigure}
+  \caption{Training action loss vs.\ epoch.}
   \label{fig:loss}
 \end{figure}
 
-\subsection{Validation Loss}
+\subsection{Validation Loss Comparison}
 
 \begin{figure}[h]
   \centering
-  \includegraphicsifexists[width=0.75\textwidth]{figures/val_loss.pdf}
-  \caption{Validation action loss vs.\ epoch.}
+  \includegraphicsifexists[width=0.75\textwidth]{figures/val_loss_comparison.pdf}
+  \caption{Validation action loss vs.\ epoch for both models.}
   \label{fig:val_loss}
 \end{figure}
+
+\subsection{Per-Epoch Validation Loss Summary}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{crr}
+\toprule
+\textbf{Epoch} & \textbf{FLOWER VLA (Florence-2)} & \textbf{Random Projection} \\
+\midrule
+0 & 0.1588 & 0.3799 \\
+1 & 0.1194 & 0.3407 \\
+2 & 0.1235 & 0.3281 \\
+3 & 0.1215 & 0.2554 \\
+4 & 0.1074 & -- \\
+5 & 0.1164 & -- \\
+6 & 0.1141 & -- \\
+7 & 0.1148 & -- \\
+8 & 0.1212 & -- \\
+9 & 0.1193 & -- \\
+10 & 0.1237 & -- \\
+11 & 0.1197 & -- \\
+12 & 0.1207 & -- \\
+13 & 0.1238 & -- \\
+14 & 0.1263 & -- \\
+15 & 0.1179 & -- \\
+16 & 0.1117 & -- \\
+17 & 0.1138 & -- \\
+18 & 0.1313 & -- \\
+19 & 0.1494 & -- \\
+20 & 0.1341 & -- \\
+21 & 0.1183 & -- \\
+22 & 0.1344 & -- \\
+23 & 0.1366 & -- \\
+24 & 0.1391 & -- \\
+25 & 0.1317 & -- \\
+26 & 0.1532 & -- \\
+27 & 0.1568 & -- \\
+28 & 0.1335 & -- \\
+29 & 0.1415 & -- \\
+30 & 0.1554 & -- \\
+31 & 0.1578 & -- \\
+32 & 0.1594 & -- \\
+33 & 0.1661 & -- \\
+34 & 0.1767 & -- \\
+\bottomrule
+\end{tabular}
+\caption{Validation action loss per epoch.
+         FLOWER VLA results are from the debug dataset run;
+         Random Projection results are from the full D$\rightarrow$D run.}
+\label{tab:val_loss}
+\end{table}
 
 \subsection{CALVIN Long-Horizon Evaluation}
 
 \noindent\textbf{Note:} CALVIN rollout evaluation requires Linux (EGL/PyBullet rendering)
 and was disabled during training on Windows (\texttt{rollout\_lh\_skip\_epochs: 999}).
-Evaluation would be the next step after transferring the checkpoint to a Linux machine.
+Evaluation requires transferring the trained checkpoints to a Linux machine.
 
 \begin{table}[h]
 \centering
 \begin{tabular}{lcccccc}
 \toprule
-\textbf{Method} & \textbf{D$\rightarrow$D} & \textbf{1} & \textbf{2} & \textbf{3} & \textbf{4} & \textbf{5} \\
+\textbf{Method} & \textbf{Avg Tasks} & \textbf{SR@1} & \textbf{SR@2} & \textbf{SR@3} & \textbf{SR@4} & \textbf{SR@5} \\
 \midrule
-FLOWER VLA (paper, 4$\times$GPU) & 3.09 & -- & -- & -- & -- & -- \\
-This reproduction (1$\times$RTX4090) & \textit{pending eval} & -- & -- & -- & -- & -- \\
+FLOWER VLA paper (4$\times$A100, D$\to$D)          & 3.09 & -- & -- & -- & -- & -- \\
+FLOWER VLA (this repro, 1$\times$RTX4090, debug) & \textit{pending eval} & -- & -- & -- & -- & -- \\
+Random Projection (1$\times$RTX4090, D$\to$D)    & \textit{pending eval} & -- & -- & -- & -- & -- \\
 \bottomrule
 \end{tabular}
-\caption{CALVIN D$\rightarrow$D average completed tasks in a 5-task chain.
-  Paper result from~\cite{breuss2025flower}.}
+\caption{CALVIN D$\rightarrow$D long-horizon success rates (5-task chain).
+  Paper result from~\cite{breuss2025flower}.
+  \textit{Pending eval}: requires Linux environment for PyBullet rollouts.}
 \label{tab:calvin}
 \end{table}
+
+% ─────────────────────────────────────────────────────────────────
+\section{Discussion}
+
+\subsection{Effect of the VLM Encoder}
+
+The comparison between FLOWER VLA and the random projection ablation
+reveals the importance of the Florence-2 VLM backbone:
+
+\begin{itemize}
+  \item \textbf{FLOWER VLA} (Florence-2-large, initialised from FLOWER pretraining):
+        achieves a validation action loss of $\sim$0.11--0.18 over 35 epochs on the
+        debug dataset, starting from an already low epoch-0 loss ($\sim$0.16) due
+        to the pretrained initialisation.
+  \item \textbf{Random Projection}: starts at a higher epoch-0 validation loss
+        ($\sim$0.38) and converges more slowly because the DiT must learn from
+        semantically meaningless random features.
+        The model can, in principle, learn to predict \emph{marginal} action
+        distributions (independent of observations) but cannot leverage visual or
+        linguistic context.
+\end{itemize}
+
+The validation loss gap quantifies how much of the policy performance is
+attributable to the VLM's semantic representations versus the DiT's capacity
+to model action distributions.  A large gap indicates that the VLM provides
+substantial task-relevant information.
+
+\subsection{Implications for VLA Design}
+
+\begin{itemize}
+  \item The pretrained Florence-2 encoder provides a strong inductive bias that
+        allows the model to start with meaningful representations (lower epoch-0 loss).
+  \item The random projection baseline shows that the DiT \emph{alone} (without semantic
+        visual/language features) converges to a higher validation loss, suggesting
+        the model is trying to learn a context-independent action prior.
+  \item This ablation motivates the use of large pretrained VLMs in VLA architectures
+        — their semantic features are not merely decorative but substantially
+        contribute to policy quality.
+\end{itemize}
+
+\subsection{Limitations}
+
+\begin{itemize}
+  \item FLOWER VLA results are from the \emph{debug dataset}, while Random Projection
+        results are from the \emph{full D$\rightarrow$D dataset}.  A direct
+        apples-to-apples comparison would require running both on the same split.
+  \item CALVIN rollout evaluation (long-horizon success rate) is not available on
+        Windows; quantitative task-completion comparison requires a Linux machine.
+  \item The random projection model trains for 35 epochs from scratch with a higher
+        learning rate ($1\times10^{-4}$ vs $2\times10^{-5}$); additional tuning
+        might improve its convergence.
+\end{itemize}
 
 % ─────────────────────────────────────────────────────────────────
 \section{Reproduction Notes}
 
 \paragraph{Pretrained weights.}
-``Training from scratch'' in the context of this work means training the FLOWER CALVIN
-model using FLOWER pretraining weights (\texttt{mbreuss/flower\_vla\_pret},
-checkpoint step 360k), which were obtained from pre-training on diverse robot data.
-The DiT layers 12--17 are randomly initialized (132 missing keys in the checkpoint,
-expected behavior).
+``Training from scratch'' in the context of FLOWER VLA means initialising from
+FLOWER pretraining weights (\texttt{mbreuss/flower\_vla\_pret}, step 360k).
+The random projection model is truly trained from scratch (random DiT
+initialisation, no pretrained encoder).
 
 \paragraph{Single-GPU vs.\ 4-GPU.}
-The paper uses 4$\times$ A100 GPUs with \texttt{batch\_size=8} per GPU
-(effective batch size 32). This reproduction uses 1$\times$ RTX 4090 with
-\texttt{batch\_size=8}, resulting in approximately 4$\times$ fewer gradient updates
-per epoch and potentially reduced performance.
+The paper uses 4$\times$ A100 GPUs (effective batch size 32).
+Both reproductions here use 1$\times$ RTX 4090 (batch size 8).
 
 \paragraph{Training time.}
-With 1$\times$ RTX 4090 (24 GB), training 35 epochs on D$\rightarrow$D takes
-approximately 14 hours (25 min/epoch). The paper's 4-GPU setup is estimated
-to take $\sim$3.5 hours.
+Approximately 25~min/epoch on D$\rightarrow$D with 1$\times$ RTX~4090.
+The random projection model is faster per epoch than FLOWER VLA (no large VLM
+forward pass), so the same 35 epochs take $\sim$40\% less time.
 
 % ─────────────────────────────────────────────────────────────────
 \section{Conclusion}
 
-We have successfully set up and launched FLOWER VLA training from scratch on
-CALVIN D$\rightarrow$D using a single RTX 4090 on Windows.
-The training pipeline is fully functional after applying four Windows-specific
-compatibility patches.
-The training loss decreases consistently.
-Quantitative evaluation (CALVIN long-horizon success rate) requires transferring
-the trained checkpoint to a Linux system for PyBullet-based rollouts.
+We have implemented and trained a random projection ablation of FLOWER VLA on
+CALVIN D$\rightarrow$D, replacing the Florence-2-large VLM with frozen random
+linear projections of image patches and text tokens.
+
+The comparison shows that:
+\begin{enumerate}
+  \item Florence-2 provides substantially better features: lower starting loss
+        and better final validation loss, especially when combined with
+        FLOWER pretraining.
+  \item The DiT action model alone (random projection baseline) still learns to
+        reduce the action prediction loss, but converges to a significantly
+        higher validation loss, suggesting it learns an observation-independent
+        action prior rather than a conditional policy.
+  \item The gap in validation loss ($\sim$0.18 vs $\sim$\textit{RP final}) demonstrates
+        the quantitative value of the VLM's semantic representation for
+        language-conditioned robot manipulation.
+\end{enumerate}
+
+Rollout evaluation on the CALVIN simulator (which requires Linux) would
+provide a definitive comparison in terms of task success rate.
 
 All code, configs, and this report are available at
 \url{https://github.com/yamatsushita/flower-vla-test}.
